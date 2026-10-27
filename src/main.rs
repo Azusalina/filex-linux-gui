@@ -5,36 +5,36 @@ macro_rules! ui_format {
     };
 }
 // The tree model, file operations, ordering and Git logic are compiled from
-// ../fileX itself, so the GUI follows the TUI's behaviour and configuration.
+// ../filex itself, so the GUI follows the TUI's behaviour and configuration.
 #[allow(dead_code)]
-#[path = "../../fileX/src/config.rs"]
+#[path = "../../filex/src/config.rs"]
 mod config;
 #[allow(dead_code)]
-#[path = "../../fileX/src/edit.rs"]
+#[path = "../../filex/src/edit.rs"]
 mod edit;
 #[allow(dead_code)]
-#[path = "../../fileX/src/files.rs"]
+#[path = "../../filex/src/files.rs"]
 mod files;
 #[allow(dead_code)]
-#[path = "../../fileX/src/git_actions.rs"]
+#[path = "../../filex/src/git_actions.rs"]
 mod git_actions;
 #[allow(dead_code)]
-#[path = "../../fileX/src/git_status.rs"]
+#[path = "../../filex/src/git_status.rs"]
 mod git_status;
 #[allow(dead_code)]
-#[path = "../../fileX/src/jobs.rs"]
+#[path = "../../filex/src/jobs.rs"]
 mod jobs;
 #[allow(dead_code)]
-#[path = "../../fileX/src/links.rs"]
+#[path = "../../filex/src/links.rs"]
 mod links;
 #[allow(dead_code)]
-#[path = "../../fileX/src/model.rs"]
+#[path = "../../filex/src/model.rs"]
 mod model;
 #[allow(dead_code)]
-#[path = "../../fileX/src/ordering.rs"]
+#[path = "../../filex/src/ordering.rs"]
 mod ordering;
 #[allow(dead_code)]
-#[path = "../../fileX/src/transfer.rs"]
+#[path = "../../filex/src/transfer.rs"]
 mod transfer;
 
 mod app;
@@ -86,7 +86,7 @@ fn main() {
 fn run() -> Result<(), String> {
     if env::var_os("FILEX_ROOT").is_none() {
         // {filex} in opener commands refers to the TUI's product folder.
-        let sibling = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../fileX"));
+        let sibling = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../filex"));
         if let Ok(path) = std::fs::canonicalize(sibling) {
             // SAFETY: single-threaded at this point; no other thread reads the environment.
             unsafe { env::set_var("FILEX_ROOT", path) };

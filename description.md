@@ -2,7 +2,7 @@
 
 ## Architecture
 
-- `src/main.rs` compiles `config`, `edit`, `files`, `git_actions`, `git_status`, `jobs`, `links`, `model`, `ordering`, `transfer` directly from `../fileX/src` via `#[path]`, so tree model, ordering, Git status, transfers and config parsing stay identical to the TUI. `terminal_profile.rs` is a small stand-in (language + desktop flag). `FILEX_ROOT` defaults to `../fileX` so `{filex}` opener paths resolve.
+- `src/main.rs` compiles `config`, `edit`, `files`, `git_actions`, `git_status`, `jobs`, `links`, `model`, `ordering`, `transfer` directly from `../filex/src` via `#[path]`, so tree model, ordering, Git status, transfers and config parsing stay identical to the TUI. `terminal_profile.rs` is a small stand-in (language + desktop flag). `FILEX_ROOT` defaults to `../filex` so `{filex}` opener paths resolve.
 - `app.rs`: non-blocking port of the TUI `Ui`. Key → action resolution is copied from `tui.rs`; the TUI's blocking prompt / choose / confirm / pager / reorder loops are modals with continuations (copy/move replacement confirmations, Git menu → message → confirm, open-with, hidden items, trash).
 - `layout.rs`: pixel version of `model::Layout` (classic and grouped `v`), plus the ancestor route.
 - `view.rs`: header (breadcrumb, mode chips, client-side window controls), tree, dashboard (`q`), status line, modals. `paint.rs`: software painter on the 0RGB framebuffer. `font.rs`: embedded Geist / Geist Mono (SIL OFL, `assets/fonts/OFL.txt`) with fontconfig fallbacks (CJK etc.) memory-mapped on demand.
@@ -20,7 +20,7 @@
 ## Integration
 
 - `scripts/install.sh` copies the release binary to `~/.local/bin/filex-gui`, writes `~/.local/share/applications/filex-gui.desktop` (Name `filex`, `StartupWMClass=filex-gui`, matching the Wayland app id) and `hicolor/scalable/apps/filex-gui.svg`, then refreshes the desktop database, KDE's sycoca and the icon cache. It does not register a MIME type, so the default file manager is unchanged. `--rebuild`, `--remove`.
-- `../fileX/filex.sh` accepts `--gui` anywhere in its arguments: it runs `~/.local/bin/filex-gui` (or this folder's build) with the remaining arguments via `setsid -f`, unsets `FILEX_CWD_FILE`, and returns to the shell.
+- `../filex/filex.sh` accepts `--gui` anywhere in its arguments: it runs `~/.local/bin/filex-gui` (or this folder's build) with the remaining arguments via `setsid -f`, unsets `FILEX_CWD_FILE`, and returns to the shell.
 
 ## Validation (2026-10-25, KDE Plasma Wayland, scale 1.25)
 
@@ -36,7 +36,7 @@
 ## Limitations
 
 - A complete drag into a browser was not exercised automatically: Wayland does not let a test synthesise the compositor's press serial, so the drop itself needs a manual check.
-- Building needs `fileX` next to this folder (`../fileX`). Independent clones must place `Azusalina/fileX` and `Azusalina/filex-linux-gui` side by side; this repository does not vendor the shared TUI modules. Repository publication does not create a GitHub binary release.
+- Building needs `fileX` next to this folder (`../filex`). Independent clones must place `Azusalina/fileX` and `Azusalina/filex-linux-gui` side by side; this repository does not vendor the shared TUI modules. Repository publication does not create a GitHub binary release.
 - Real mouse/keyboard input under X11 and other compositors untested; IME composition tested only through code paths, not live.
 
 ## History
@@ -75,3 +75,7 @@ Earlier RSS/CPU/screenshot measurements above describe the original build and ha
 2026-10-26 extension validation: all 36 Rust tests passed, including real Vim/Nano save-and-exit and Poppler page rendering. The optional widget's native CTest, Qt 6 QML tests/lint, and isolated Plasma-host load passed. Both READMEs retain exactly the two required content sections.
 
 The rebuilt release binary also passed an isolated Xvfb window boot/render smoke test (1360×860 frame). This checks startup and software rendering on X11; it does not verify Wayland pointer serials or a physical Firefox drop.
+
+## 独立仓库迁移（2026-10-27）
+
+源码及本地数据迁至 `/home/a/Documents/products/filex-linux-gui`，已有提交历史保留。现在使用本项目自己的 `.git` 和 `origin` 独立提交、推送；不再通过 `someProducts` 的 push hook 发布。本次目录／仓库重命名保留配置目录、应用名称和已有用户数据。
