@@ -215,6 +215,9 @@ impl Shell {
     }
     fn changed(&mut self) {
         self.vs.dirty = true;
+        self.overlay_changed();
+    }
+    fn overlay_changed(&mut self) {
         if let Some(window) = &self.window {
             let title = if self.app.terminal_visible {
                 self.app
@@ -227,7 +230,7 @@ impl Shell {
             window.set_title(title.as_deref().unwrap_or("filex"));
         }
         let prompt =
-            self.app.terminal_visible || matches!(self.app.modal, Some(Modal::Prompt { .. }));
+            self.app.terminal_has_focus() || matches!(self.app.modal, Some(Modal::Prompt { .. }));
         if prompt != self.ime
             && let Some(window) = &self.window
         {
@@ -261,7 +264,7 @@ impl Shell {
         let palette = if self.dark { theme::DARK } else { theme::LIGHT };
         let started = Instant::now();
         let mut canvas = paint::Canvas::new(&mut buffer, size.width, size.height);
-        let (mut hits, animating) = view::draw(
+        let (hits, animating) = view::draw(
             &mut canvas,
             &mut self.app,
             &mut self.fonts,
@@ -269,19 +272,6 @@ impl Shell {
             scale,
             &mut self.vs,
         );
-        if self.app.terminal_visible
-            && let Some(t) = &mut self.app.terminal_page
-        {
-            t.draw(
-                &mut canvas,
-                &mut self.fonts,
-                palette,
-                scale,
-                self.app.gui.font_size,
-            );
-            hits.nodes.clear();
-            hits.crumbs.clear();
-        }
         let _ = buffer.present();
         if env::var_os("FILEX_GUI_TRACE").is_some() {
             eprintln!(
@@ -368,8 +358,14 @@ impl Shell {
             }
             return;
         }
-        if self.app.terminal_visible {
-            return;
+        if self.hits.terminal.is_some_and(|r| r.contains(x, y)) {
+            self.app.terminal_focused = true;
+            return self.changed();
+        }
+        if self.app.terminal_blocks_tree() { return; }
+        if self.app.terminal_focused {
+            self.app.terminal_focused = false;
+            self.changed();
         }
         if let Some((_, step)) = self
             .hits
@@ -414,7 +410,7 @@ impl Shell {
             .hits
             .nodes
             .iter()
-            .find(|(r, _)| r.contains(x, y))
+            .find(|(r, _)| r.contains(x, y) && self.hits.tree.contains(x, y))
             .map(|(_, n)| n.clone());
         if let Some(node) = node {
             match button {
@@ -440,7 +436,7 @@ impl Shell {
     /// A press on a node that travels a few pixels becomes an outbound drag
     /// carrying that node, or every marked item when the node is marked.
     fn drag(&mut self) {
-        if self.app.terminal_visible || self.app.modal.is_some() {
+        if self.app.terminal_blocks_tree() || self.app.modal.is_some() {
             self.press = None;
             return;
         }
@@ -475,7 +471,7 @@ impl Shell {
         self.changed();
     }
     fn drop_target(&self, x: f32, y: f32) -> Option<PathBuf> {
-        if self.app.modal.is_some() || self.app.terminal_visible {
+        if self.app.modal.is_some() || self.app.terminal_blocks_tree() {
             return None;
         }
         if let Some((_, path)) = self.hits.crumbs.iter().find(|(r, _)| r.contains(x, y)) {
@@ -485,7 +481,7 @@ impl Shell {
             .hits
             .nodes
             .iter()
-            .find(|(r, n)| r.contains(x, y) && n.borrow().dir)?;
+            .find(|(r, n)| r.contains(x, y) && self.hits.tree.contains(x, y) && n.borrow().dir)?;
         Some(node.borrow().path.clone())
     }
     fn receive_drops(&mut self) {
@@ -525,9 +521,9 @@ impl Shell {
             .hits
             .nodes
             .iter()
-            .find(|(r, _)| r.contains(x, y))
+            .find(|(r, _)| r.contains(x, y) && self.hits.tree.contains(x, y))
             .map(|(_, n)| n.clone());
-        if self.hits.modal.is_none() && !self.app.terminal_visible {
+        if self.hits.modal.is_none() && !self.app.terminal_blocks_tree() {
             if let Some(n) = &hovered {
                 let path = n.borrow().path.clone();
                 if self.app.info_path.as_ref() != Some(&path) {
@@ -575,6 +571,7 @@ impl Shell {
         }
     }
     fn scroll(&mut self, dx: f32, dy: f32) {
+        if self.hits.terminal.is_some_and(|r| r.contains(self.cursor.0, self.cursor.1)) { return; }
         if self.hits.modal.is_some() {
             let rows = (dy / (19.0 * self.scale())).round() as isize;
             self.app.modal_scroll(-rows);
@@ -715,7 +712,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                 }
             }
         }
-        self.changed();
+        self.overlay_changed();
     }
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         match event {
@@ -730,6 +727,13 @@ impl ApplicationHandler<UserEvent> for Shell {
             WindowEvent::ModifiersChanged(mods) => self.mods = mods.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 use winit::keyboard::{Key, NamedKey};
+                if terminal::bottom_shortcut(&event.logical_key, self.mods) {
+                    if !event.repeat {
+                        if let Err(error) = self.app.toggle_bottom_terminal() { self.app.message = error; }
+                        self.changed();
+                    }
+                    return;
+                }
                 if event.logical_key == Key::Named(NamedKey::F11) {
                     if let Some(w) = &self.window {
                         w.set_fullscreen(if w.fullscreen().is_some() {
@@ -745,13 +749,18 @@ impl ApplicationHandler<UserEvent> for Shell {
                     && event.logical_key == Key::Named(NamedKey::Tab)
                 {
                     if self.app.terminal_page.is_some() {
-                        self.app.terminal_visible = !self.app.terminal_visible;
+                        if self.app.terminal_docked && self.app.terminal_visible {
+                            self.app.terminal_focused = !self.app.terminal_focused;
+                        } else {
+                            self.app.terminal_visible = !self.app.terminal_visible;
+                            self.app.terminal_focused = self.app.terminal_visible;
+                        }
                         self.changed();
                     }
                     return;
                 }
                 let text = event.text.as_ref().map(|t| t.as_str());
-                if self.app.terminal_visible {
+                if self.app.terminal_has_focus() {
                     if let Some(t) = &mut self.app.terminal_page {
                         let bytes = terminal::key_bytes(
                             &event.logical_key,
@@ -770,16 +779,16 @@ impl ApplicationHandler<UserEvent> for Shell {
                     && t.chars().count() > 1
                 {
                     self.app.ime_commit(t);
-                    return self.changed();
+                    return self.overlay_changed();
                 }
                 match keys::translate(&event.logical_key, text, self.mods) {
                     Some(keys::Input::Key(key)) => {
-                        self.app.info_path = None;
+                        let overlay_only = self.app.editing_prompt() && !matches!(key.as_str(), "enter" | "escape" | "\x03");
                         self.app.handle_key(&key);
                         if self.app.quit {
                             return event_loop.exit();
                         }
-                        self.changed();
+                        if overlay_only { self.overlay_changed(); } else { self.changed(); }
                     }
                     Some(keys::Input::Zoom(step)) => self.zoom(step),
                     Some(keys::Input::Theme) => self.toggle_theme(),
@@ -787,18 +796,18 @@ impl ApplicationHandler<UserEvent> for Shell {
                 }
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                if self.app.terminal_visible {
+                if self.app.terminal_has_focus() {
                     if let Some(t) = &mut self.app.terminal_page {
                         t.write(text.as_bytes());
                     }
                 } else {
                     self.app.ime_commit(&text);
                 }
-                self.changed();
+                self.overlay_changed();
             }
             WindowEvent::Ime(Ime::Preedit(text, _)) => {
                 self.app.ime_preedit(&text);
-                self.changed();
+                self.overlay_changed();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
@@ -823,7 +832,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                         self.hits
                             .nodes
                             .iter()
-                            .find(|(r, _)| r.contains(self.cursor.0, self.cursor.1))
+                            .find(|(r, _)| r.contains(self.cursor.0, self.cursor.1) && self.hits.tree.contains(self.cursor.0, self.cursor.1))
                     })
                     .flatten()
                     .map(|(_, node)| (self.cursor.0, self.cursor.1, node.clone()));
@@ -866,11 +875,13 @@ impl ApplicationHandler<UserEvent> for Shell {
         {
             self.app.terminal_page = None;
             self.app.terminal_visible = false;
+            self.app.terminal_docked = false;
+            self.app.terminal_focused = false;
             self.app.refresh_panes();
             self.app.message = "Terminal closed".into();
             self.changed();
         }
-        if git_status::ready() {
+        if git_status::ready() && !self.app.editing_prompt() {
             self.changed();
         }
         if self.animating {

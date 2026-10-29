@@ -41,7 +41,9 @@ filex-gui ~/Documents --config ~/.config/fileX/filex.conf
 
 默认以全屏启动并展开信息面板；`F11` 切换全屏，退出全屏时面板自动折叠，`q` 仍可手动切换。鼠标悬停图片或 PDF，信息面板在元数据下显示预览；PDF 用 `‹` / `›` 翻页。支持 PNG、JPEG、GIF 首帧、WebP、BMP、TIFF；PDF 预览另需 Poppler 的 `pdfinfo` / `pdftoppm`（Arch：`poppler` 包）。
 
-终端程序（Vim、Nano、`@` 命令、Git）直接在 GUI 的终端页运行。正常退出程序后返回目录树；`Ctrl+Shift+Tab` 可在仍在运行的终端与目录树之间切换，一次保留一个终端会话。`[gui] terminal` 只用于新开外部 shell。
+终端程序（Vim、Nano、`@` 命令、Git）直接在 GUI 的终端页运行。正常退出程序后返回目录树；`Ctrl+Shift+Tab` 可在仍在运行的终端与目录树之间切换，一次保留一个终端会话。
+
+`Ctrl+J` 在下方展开 / 收起终端，上方保留目录导航。新终端默认运行 tmux（需安装 `tmux`），工作目录为当前选中文件夹；选中文件时使用其所在目录。收起后会话继续运行，再次展开会恢复同一会话。点击目录树 / 终端可切换键盘焦点，`Ctrl+Shift+Tab` 也可切换；已有编辑器终端时，`Ctrl+J` 将该会话放到下方。tmux 的默认前缀为 `Ctrl+B`，`exit` 或结束 tmux 客户端后收起面板。`[gui] terminal` 只用于新开外部 shell。
 
 透明 KDE 桌面导航部件是独立的可选功能，安装和鼠标悬停文件夹后按 `x` 打开终端的方法见 [widget/README.md](widget/README.md)。
 

@@ -15,6 +15,27 @@ use winit::{
     keyboard::{Key, ModifiersState, NamedKey},
 };
 
+/// Keep a new GUI session separate from any tmux client that launched FileX.
+pub fn tmux_script(cwd: &Path) -> std::ffi::OsString {
+    let mut script = std::ffi::OsString::from("exec env -u TMUX -u TMUX_PANE tmux new-session -c ");
+    script.push(crate::launch::quote(cwd.as_os_str()));
+    script
+}
+
+pub fn bottom_shortcut(key: &Key, mods: ModifiersState) -> bool {
+    mods.control_key() && !mods.shift_key() && !mods.alt_key() && !mods.super_key()
+        && matches!(key, Key::Character(s) if s.eq_ignore_ascii_case("j"))
+}
+
+/// Match the current header/status bars; reserve the bottom 40% for the PTY.
+pub fn pane_rect(width: f32, height: f32, scale: f32, docked: bool) -> crate::paint::Rect {
+    let top = (46.0 * scale).round();
+    let bottom = (height - (30.0 * scale).round()).max(top);
+    let available = (bottom - top).max(0.0);
+    let h = if docked { (available * 0.4).round() } else { available };
+    crate::paint::Rect::new(0.0, bottom - h, width, h)
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct Terminal {
     pub id: u64,
@@ -293,14 +314,9 @@ impl Terminal {
         theme: crate::theme::Theme,
         scale: f32,
         font_size: f32,
+        rect: crate::paint::Rect,
     ) {
         use crate::{font::Face, paint::Rect};
-        let rect = Rect::new(
-            0.0,
-            46.0 * scale,
-            canvas.w as f32,
-            canvas.h as f32 - 76.0 * scale,
-        );
         canvas.set_clip(rect);
         canvas.fill(rect, theme.bg, 255);
         let size = font_size * scale;
@@ -326,7 +342,7 @@ impl Terminal {
                 if cell.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
                 }
-                let x = pad + col as f32 * cw;
+                let x = rect.x + pad + col as f32 * cw;
                 let y = rect.y + pad + row as f32 * ch;
                 let width = cw * if cell.is_wide() { 2.0 } else { 1.0 };
                 canvas.fill(Rect::new(x, y, width, ch), bg, 255);
@@ -351,7 +367,7 @@ impl Terminal {
             let (row, col) = screen.cursor_position();
             canvas.stroke(
                 Rect::new(
-                    pad + col as f32 * cw,
+                    rect.x + pad + col as f32 * cw,
                     rect.y + pad + row as f32 * ch,
                     cw,
                     ch,
@@ -367,21 +383,27 @@ impl Terminal {
 
 #[derive(Default)]
 pub struct Responses(Vec<u8>);
+#[cfg(test)]
+impl Responses { pub fn bytes(&self) -> &[u8] { &self.0 } }
 impl vt100::Callbacks for Responses {
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
-        _: Option<u8>,
+        private: Option<u8>,
         _: Option<u8>,
         params: &[&[u16]],
         command: char,
     ) {
-        if command == 'n' && params.first().is_some_and(|v| *v == [6]) {
+        if command == 'n' && private.is_none() && params.first().is_some_and(|v| *v == [6]) {
             let (row, col) = screen.cursor_position();
             self.0
                 .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
-        } else if command == 'c' {
-            self.0.extend_from_slice(b"\x1b[?1;2c");
+        } else if command == 'c' && params.first().is_none_or(|v| *v == [0]) {
+            match private {
+                None => self.0.extend_from_slice(b"\x1b[?1;2c"),
+                Some(b'>') => self.0.extend_from_slice(b"\x1b[>0;0;0c"),
+                _ => {},
+            }
         }
     }
 }

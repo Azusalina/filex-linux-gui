@@ -20,7 +20,7 @@ pub enum Control {
     Close,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Hits {
     pub nodes: Vec<(Rect, NodeRef)>,
     pub header: Rect,
@@ -29,13 +29,26 @@ pub struct Hits {
     pub modal: Option<Rect>,
     pub rows: Vec<(Rect, usize)>,
     pub tree: Rect,
+    pub terminal: Option<Rect>,
     pub caret: Option<Rect>,
     pub preview_buttons: Vec<(Rect, i32)>,
+}
+
+struct PromptBackdrop {
+    pixels: Vec<u32>,
+    hits: Hits,
+    width: i32,
+    height: i32,
+    scale: f32,
+    dark: bool,
 }
 
 pub struct ViewState {
     pub layout: Option<TreeLayout>,
     pub dirty: bool,
+    prompt_backdrop: Option<PromptBackdrop>,
+    #[cfg(test)]
+    pub layout_builds: usize,
     pub cam: (f32, f32),
     sel_ptr: usize,
     sel_from: Rect,
@@ -52,6 +65,9 @@ impl ViewState {
         Self {
             layout: None,
             dirty: true,
+            prompt_backdrop: None,
+            #[cfg(test)]
+            layout_builds: 0,
             cam: (0.0, 0.0),
             sel_ptr: 0,
             sel_from: Rect::default(),
@@ -127,6 +143,18 @@ pub fn draw(
     let mut hits = Hits::default();
     let mut animating = false;
     let mut cx = Ctx { fonts, t: theme, s };
+    if app.editing_prompt() && !vs.dirty {
+        if let Some(backdrop) = &vs.prompt_backdrop
+            && backdrop.width == canvas.w && backdrop.height == canvas.h
+            && backdrop.scale == scale && backdrop.dark == theme.dark
+        {
+            canvas.px.copy_from_slice(&backdrop.pixels);
+            let mut hits = backdrop.hits.clone();
+            draw_modal(canvas, &mut cx, app, &mut hits, w, h, (46.0 * s).round());
+            return (hits, false);
+        }
+    }
+    vs.prompt_backdrop = None;
     canvas.clear(theme.bg);
     app.prepare();
 
@@ -139,13 +167,19 @@ pub fn draw(
     } else {
         0.0
     };
-    let tree = Rect::new(0.0, header_h, w - panel_w, h - header_h - status_h);
+    let terminal_h = if app.terminal_visible && app.terminal_docked {
+        let pane = crate::terminal::pane_rect(w, h, s, true);
+        hits.terminal = Some(pane);
+        pane.h
+    } else { 0.0 };
+    let tree = Rect::new(0.0, header_h, w - panel_w, (h - header_h - status_h - terminal_h).max(0.0));
     hits.tree = tree;
     let m = Metrics::new(s, app.gui.font_size, &app.browser.conf);
     app.view_rows = (tree.h / m.row).max(1.0) as usize;
 
     // ---- tree ------------------------------------------------------------------
     if vs.dirty || vs.layout.is_none() {
+        #[cfg(test)] { vs.layout_builds += 1; }
         vs.layout = Some(TreeLayout::new(&app.browser, cx.fonts, &m));
         vs.dirty = false;
     }
@@ -551,9 +585,30 @@ pub fn draw(
     }
     cx.text(canvas, x0, st.y, st.h, &line, face, size, color);
 
+    if app.terminal_visible && let Some(terminal) = &mut app.terminal_page {
+        let rect = crate::terminal::pane_rect(w, h, s, app.terminal_docked);
+        terminal.draw(canvas, cx.fonts, theme, s, app.gui.font_size, rect);
+        if app.terminal_docked {
+            canvas.hline(0.0, w, rect.y, s, theme.hair, 255);
+        } else {
+            hits.nodes.clear();
+            hits.crumbs.clear();
+            hits.preview_buttons.clear();
+        }
+        hits.terminal = Some(rect);
+    }
+
     // ---- modal -----------------------------------------------------------------
     if app.modal.is_some() {
         canvas.fill(Rect::new(0.0, 0.0, w, h), theme.bg, if theme.dark { 150 } else { 120 });
+        // One temporary framebuffer (at most 32 MiB) avoids remeasuring and
+        // repainting thousands of unchanged filenames for every keystroke.
+        if app.editing_prompt() && canvas.px.len() <= 8_388_608 {
+            vs.prompt_backdrop = Some(PromptBackdrop {
+                pixels: canvas.px.to_vec(), hits: hits.clone(), width: canvas.w,
+                height: canvas.h, scale, dark: theme.dark,
+            });
+        }
         draw_modal(canvas, &mut cx, app, &mut hits, w, h, header_h);
     }
     if !app.gui.animations {

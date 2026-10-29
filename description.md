@@ -79,3 +79,22 @@ The rebuilt release binary also passed an isolated Xvfb window boot/render smoke
 ## 独立仓库迁移（2026-10-27）
 
 源码及本地数据迁至 `/home/a/Documents/products/filex-linux-gui`，已有提交历史保留。现在使用本项目自己的 `.git` 和 `origin` 独立提交、推送；不再通过 `someProducts` 的 push hook 发布。本次目录／仓库重命名保留配置目录、应用名称和已有用户数据。
+
+
+## Bottom terminal (2026-10-28)
+
+Ctrl+J opens a bottom PTY pane using `tmux new-session -c <selected directory>` by default. It unsets inherited TMUX/TMUX_PANE values for the new client, without attaching to or changing an existing tmux session. Missing tmux produces an explicit message. The top tree and information dashboard keep their existing rendering in the remaining space; the terminal uses the existing fonts and palette.
+
+The existing one-PTY lifecycle is retained: Ctrl+J docks an existing editor session instead of replacing it, and hiding preserves the same process. Click either pane or use Ctrl+Shift+Tab to route keyboard/IME input. Ctrl+J is reserved globally and ignores auto-repeat. Full-page editor openers retain their normal behavior when no terminal is already running. Terminal exit restores the full tree viewport; hiding or opening the pane does not change filesystem selection.
+
+
+## Rename input workload (2026-10-28)
+
+Previously `Shell::changed()` invalidated the complete tree layout after every prompt keystroke and IME update, causing all visible filenames to be measured again. Input-only updates now redraw the prompt and caret over a cached, already dimmed background. One temporary framebuffer is kept while editing (at most 32 MiB), then released when the prompt closes. Resize, scale/theme changes and actual tree operations invalidate this cache. Tree/Git preparation and Git polling are not restarted for text input. Submission/cancellation still invalidates the tree normally.
+
+The regression workload uses a directory with 3,000 loaded files, checks pixel equality against a full redraw for typing and Chinese IME composition, verifies layout reuse and unchanged Git polling, and confirms a submitted rename appears in the rebuilt tree. This is a controlled render benchmark, not a measurement of the user's complete desktop latency. Device-attribute replies also distinguish primary and secondary terminal queries so tmux startup does not leak handshake bytes into its shell.
+
+Terminal control reference: [XTerm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html).
+
+
+2026-10-28 validation: `cargo build --release --locked --offline` succeeded and all 41 release-mode tests passed, including tmux on an isolated socket, editor save/exit, dock visibility/focus/geometry and rename-cache rendering equality. An isolated Xvfb session injected actual Ctrl+J key events and verified that hide/show restored the same tmux client PID. A separate release benchmark with 3,000 loaded files measured six cached input redraws at 115.95 ms versus 437.01 ms for six forced full layout/background rebuilds (about 73% less time). This controlled render comparison does not measure full desktop input-to-display latency. Live KDE Wayland input remains a separate manual boundary.

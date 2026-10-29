@@ -137,6 +137,8 @@ pub struct App {
     pub dashboard: bool,
     pub terminal_page: Option<crate::terminal::Terminal>,
     pub terminal_visible: bool,
+    pub terminal_docked: bool,
+    pub terminal_focused: bool,
     pub meta_path: Option<PathBuf>,
     pub meta: Dash,
     pub info_path: Option<PathBuf>,
@@ -176,6 +178,8 @@ impl App {
             dashboard: true,
             terminal_page: None,
             terminal_visible: false,
+            terminal_docked: false,
+            terminal_focused: false,
             meta_path: None,
             meta: Dash::default(),
             info_path: None,
@@ -268,6 +272,9 @@ impl App {
     }
     /// Per frame: Git snapshots, transient `+` entries and mark flags.
     pub fn prepare(&mut self) {
+        // An input prompt does not change nodes, marks or Git labels. Defer
+        // background tree work until the operation is submitted/cancelled.
+        if self.editing_prompt() { return; }
         self.browser.update_git();
         if self.pending.is_some() && !self.browser.destination_mode {
             self.browser.set_destination_mode(true);
@@ -286,7 +293,7 @@ impl App {
         directory: &Path,
         moving: bool,
     ) -> Result<(), String> {
-        if self.modal.is_some() || self.pending.is_some() || self.terminal_visible {
+        if self.modal.is_some() || self.pending.is_some() || self.terminal_blocks_tree() {
             return Err("Finish or cancel the current operation before dropping files".into());
         }
         if sources.is_empty() {
@@ -314,6 +321,31 @@ impl App {
         }
         result
     }
+    pub fn terminal_blocks_tree(&self) -> bool {
+        self.terminal_visible && !self.terminal_docked
+    }
+    pub fn terminal_has_focus(&self) -> bool {
+        self.modal.is_none() && self.terminal_visible && (!self.terminal_docked || self.terminal_focused)
+    }
+    /// Show/hide the same PTY; hiding never detaches or restarts its tmux client.
+    pub fn toggle_bottom_terminal(&mut self) -> Result<(), String> {
+        if self.modal.is_some() { return Ok(()); }
+        if self.terminal_page.is_some() {
+            self.terminal_visible = !self.terminal_docked || !self.terminal_visible;
+        } else {
+            if !files::available("tmux") { return Err("tmux is not installed; install tmux to use Ctrl+J".into()); }
+            let cwd = files::exit_directory_path(&self.selection_path())?;
+            let proxy = self.proxy.clone().ok_or("Window event loop is not ready")?;
+            let script = crate::terminal::tmux_script(&cwd);
+            self.terminal_page = Some(crate::terminal::Terminal::spawn(&cwd, &script, false, "tmux".into(), proxy)?);
+            self.terminal_visible = true;
+        }
+        self.terminal_docked = true;
+        self.terminal_focused = self.terminal_visible;
+        self.focus = true;
+        self.message = "Ctrl+J: terminal · click tree/terminal to focus · Ctrl+Shift+Tab: switch focus".into();
+        Ok(())
+    }
     fn start_terminal(
         &mut self,
         cwd: &Path,
@@ -323,6 +355,7 @@ impl App {
     ) -> Result<(), String> {
         if self.terminal_page.is_some() {
             self.terminal_visible = true;
+            self.terminal_focused = true;
             return Err("A terminal is already running; exit it before starting another".into());
         }
         let proxy = self.proxy.clone().ok_or("Window event loop is not ready")?;
@@ -330,6 +363,8 @@ impl App {
             cwd, script, pause, title, proxy,
         )?);
         self.terminal_visible = true;
+        self.terminal_docked = false;
+        self.terminal_focused = true;
         self.message = "Terminal · Ctrl+Shift+Tab switches to the tree".into();
         Ok(())
     }
@@ -948,9 +983,13 @@ impl App {
 
     // ---- input -------------------------------------------------------------------
     /// The TUI main loop body: focus follows the cursor, messages clear, errors report.
+    pub fn editing_prompt(&self) -> bool { matches!(self.modal, Some(Modal::Prompt { .. })) }
     pub fn handle_key(&mut self, key: &str) {
-        self.info_path = None;
-        self.focus = true;
+        let editing = self.editing_prompt();
+        if !editing {
+            self.info_path = None;
+            self.focus = true;
+        }
         if !["H", "L"].contains(&key) {
             self.message.clear()
         }
@@ -962,7 +1001,7 @@ impl App {
         if let Err(e) = result {
             self.message = ui_format!("操作失败: {}", "Operation failed: {}", clean(&e));
         }
-        self.poll_git();
+        if !editing || !self.editing_prompt() { self.poll_git(); }
     }
     pub fn handle_action(&mut self, action: &str) {
         self.focus = true;
@@ -1641,7 +1680,7 @@ impl App {
     /// Structured dashboard for the selected path (q).
     pub fn pump_preview(&mut self) {
         if !self.dashboard
-            || self.terminal_visible
+            || self.terminal_blocks_tree()
             || self.preview.busy
             || self.preview.image.is_some()
             || !self.preview.error.is_empty()

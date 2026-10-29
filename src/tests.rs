@@ -703,3 +703,220 @@ fn dashboard_renders_photo_below_metadata_and_pdf_page_controls() {
     );
     assert_eq!(hits.preview_buttons.len(), 2);
 }
+
+#[test]
+fn ctrl_j_is_reserved_without_stealing_other_modifier_bindings() {
+    let key = Key::Character("j".into());
+    assert!(crate::terminal::bottom_shortcut(&key, ModifiersState::CONTROL));
+    for mods in [
+        ModifiersState::empty(),
+        ModifiersState::CONTROL | ModifiersState::SHIFT,
+        ModifiersState::CONTROL | ModifiersState::ALT,
+        ModifiersState::CONTROL | ModifiersState::SUPER,
+    ] {
+        assert!(!crate::terminal::bottom_shortcut(&key, mods));
+    }
+}
+
+#[test]
+fn bottom_terminal_keeps_navigation_and_reuses_session_when_toggled() {
+    use std::ffi::OsStr;
+    let f = Fixture::new();
+    let mut ui = app(&f.0);
+    let terminal =
+        crate::terminal::Terminal::spawn_with_sink(&f.0, OsStr::new("read -r line"), false, "test".into(), Box::new(|_| {})).unwrap();
+    let id = terminal.id;
+    ui.terminal_page = Some(terminal);
+    ui.terminal_visible = true; // an existing full-page editor may also be docked
+    ui.toggle_bottom_terminal().unwrap();
+    assert!(ui.terminal_visible && ui.terminal_docked && ui.terminal_has_focus());
+    assert!(!ui.terminal_blocks_tree());
+    ui.terminal_focused = false;
+    assert!(!ui.terminal_has_focus());
+    keys(&mut ui, &["right"]);
+    let selected = ui.selection_path();
+    let mut pixels = vec![0; 1360 * 860];
+    let mut canvas = crate::paint::Canvas::new(&mut pixels, 1360, 860);
+    let mut fonts = Fonts::new();
+    let mut state = crate::view::ViewState::new(true);
+    let (hits, _) = crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    let pane = hits.terminal.unwrap();
+    assert_eq!(hits.tree.bottom(), pane.y);
+    assert!(hits.tree.h > pane.h && !hits.nodes.is_empty());
+    assert_eq!(pane.bottom(), 830.0);
+    ui.toggle_bottom_terminal().unwrap();
+    assert!(!ui.terminal_visible && !ui.terminal_has_focus());
+    assert_eq!(ui.terminal_page.as_ref().unwrap().id, id);
+    let (hidden, _) = crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    assert!(hidden.terminal.is_none() && hidden.tree.h > hits.tree.h);
+    ui.toggle_bottom_terminal().unwrap();
+    assert!(ui.terminal_has_focus());
+    assert_eq!(ui.terminal_page.as_ref().unwrap().id, id);
+    assert_eq!(ui.selection_path(), selected);
+    for scale in [0.6, 1.0, 1.25, 2.5] {
+        let r = crate::terminal::pane_rect(1360.0, 860.0, scale, true);
+        assert!(r.y >= 46.0 * scale && r.bottom() <= 860.0 - 30.0 * scale + 1.0);
+    }
+}
+
+#[test]
+fn tmux_bottom_session_starts_in_selected_directory_and_exits() {
+    use crate::{app::UserEvent, terminal::Terminal};
+    use std::{
+        ffi::OsStr,
+        process::{Command, Stdio},
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    if !crate::files::available("tmux") {
+        eprintln!("tmux integration skipped: tmux unavailable");
+        return;
+    }
+    let f = Fixture::new();
+    let cwd = f.0.join("folder with ' quote");
+    fs::create_dir(&cwd).unwrap();
+    let socket = f.0.join("tmux.sock");
+    struct Server(PathBuf);
+    impl Drop for Server {
+        fn drop(&mut self) {
+            let _ = Command::new("tmux")
+                .arg("-S")
+                .arg(&self.0)
+                .arg("kill-server")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+    let _server = Server(socket.clone());
+    // Run the normal startup script with a private test socket/config, never the user's server.
+    let script = crate::terminal::tmux_script(&cwd);
+    let replacement = format!(
+        "tmux -S {} -f /dev/null new-session",
+        crate::launch::quote(socket.as_os_str()).to_string_lossy()
+    );
+    let script = script.to_string_lossy().replace("tmux new-session", &replacement);
+    let (tx, rx) = mpsc::channel();
+    let mut terminal = Terminal::spawn_with_sink(
+        &cwd,
+        OsStr::new(&script),
+        false,
+        "tmux".into(),
+        Box::new(move |e| {
+            let _ = tx.send(e);
+        }),
+    )
+    .unwrap();
+    terminal.resize(24, 100);
+    let deadline = Instant::now() + Duration::from_secs(6);
+    let mut ready = false;
+    while Instant::now() < deadline {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(UserEvent::TerminalOutput(_, bytes)) => terminal.process(&bytes),
+            Ok(UserEvent::TerminalEnded(_)) => {
+                terminal.exited = true;
+                break;
+            }
+            _ => {}
+        }
+        if !ready && socket.exists() {
+            let output = Command::new("tmux")
+                .arg("-S")
+                .arg(&socket)
+                .args(["display-message", "-p", "#{pane_current_path}"])
+                .output()
+                .unwrap();
+            if output.status.success() {
+                assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), cwd.to_string_lossy());
+                ready = true;
+                terminal.write(b"exit\r");
+            }
+        }
+    }
+    assert!(ready, "tmux never opened: {}", terminal.parser.screen().contents());
+    assert!(terminal.exited, "tmux client never exited: {}", terminal.parser.screen().contents());
+}
+
+#[test]
+fn rename_typing_reuses_backdrop_and_preserves_rendered_output() {
+    use std::time::Instant;
+    let f = Fixture::new();
+    for i in 0..3000 {
+        fs::write(f.0.join(format!("document-{i:04}-long-name.txt")), "").unwrap();
+    }
+    let conf = Config {
+        max_entries: 5000,
+        max_loaded: 5000,
+        git_enabled: false,
+        ..Config::default()
+    };
+    let mut ui = App::new(Browser::new(&f.0, conf).unwrap(), f.0.join("settings.conf"), GuiConfig::default());
+    ui.gui.animations = false;
+    let original = f.0.join("document-0000-long-name.txt");
+    select(&mut ui, &original);
+    ui.handle_key("r");
+    let mut pixels = vec![0; 1360 * 860];
+    let mut canvas = crate::paint::Canvas::new(&mut pixels, 1360, 860);
+    let mut fonts = Fonts::new();
+    let mut state = crate::view::ViewState::new(true);
+    crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    let builds = state.layout_builds;
+    let tick = ui.git_poll_until;
+    let start = Instant::now();
+    for _ in 0..6 {
+        ui.handle_key("a");
+        crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    }
+    let cached = start.elapsed();
+    assert_eq!(state.layout_builds, builds, "typing rebuilt unchanged directory geometry");
+    assert_eq!(ui.git_poll_until, tick, "typing restarted Git polling");
+    let cached_pixels = canvas.px.to_vec();
+    state.dirty = true;
+    crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    assert!(canvas.px == cached_pixels, "cached prompt changed the visible output");
+    let start = Instant::now();
+    for _ in 0..6 {
+        state.dirty = true;
+        crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    }
+    let full = start.elapsed();
+    eprintln!(
+        "3000-file rename, 6 frames: cached={:.2} ms, full rebuild={:.2} ms",
+        cached.as_secs_f64() * 1000.0,
+        full.as_secs_f64() * 1000.0
+    );
+    // IME composition/cursor deletion use the same cached background correctly.
+    ui.ime_preedit("经济");
+    crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    let ime_pixels = canvas.px.to_vec();
+    state.dirty = true;
+    crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    assert!(canvas.px == ime_pixels, "cached IME prompt changed the visible output");
+    keys(&mut ui, &["\x15"]);
+    typed(&mut ui, "renamed.txt");
+    keys(&mut ui, &["enter"]);
+    assert!(f.0.join("renamed.txt").exists() && !original.exists());
+    state.dirty = true;
+    crate::view::draw(&mut canvas, &mut ui, &mut fonts, crate::theme::DARK, 1.0, &mut state);
+    assert!(
+        state
+            .layout
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .any(|item| item.node.borrow().path == f.0.join("renamed.txt"))
+    );
+}
+
+#[test]
+fn device_attribute_queries_keep_primary_and_secondary_replies_distinct() {
+    let mut parser = vt100::Parser::new_with_callbacks(
+        vt100::Parser::DEFAULT_ROWS,
+        vt100::Parser::DEFAULT_COLS,
+        0,
+        crate::terminal::Responses::default(),
+    );
+    parser.process(b"\x1b[c\x1b[>c");
+    assert_eq!(parser.callbacks().bytes(), b"\x1b[?1;2c\x1b[>0;0;0c");
+}
